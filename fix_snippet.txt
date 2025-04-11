@@ -1,0 +1,6 @@
+                if has_existing_data:
+                    with col_import2:
+                        append_mode = st.checkbox("追加模式", value=False, help="勾选后将新热词追加到现有热词列表，而不是替换")
+                else:
+                    append_mode = False
+
