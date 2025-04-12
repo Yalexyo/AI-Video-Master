@@ -18,6 +18,9 @@ import glob  # 添加glob导入
 import shutil
 from manage_projects import delete_project as manage_delete_project
 import re
+from sentence_transformers import SentenceTransformer
+import io
+import csv
 
 # 阿里云DashScope热词管理API接口
 def create_vocabulary(prefix, target_model, vocabulary):
@@ -625,6 +628,10 @@ def main():
     # 初始化会话状态
     session_state.initialize_session()
     
+    # 初始化关键词结果状态
+    if 'keyword_results' not in st.session_state:
+        st.session_state['keyword_results'] = []
+    
     # 初始化UI状态变量
     if 'show_delete_confirm' not in st.session_state:
         st.session_state['show_delete_confirm'] = False
@@ -632,6 +639,62 @@ def main():
         st.session_state['show_delete_dialog'] = False
     if 'deleted_project_name' not in st.session_state:
         st.session_state['deleted_project_name'] = ""
+    
+    # 自动加载initial key dimensions作为默认维度设置
+    if 'settings' in st.session_state and not st.session_state.settings.get('dimensions'):
+        try:
+            template_path = os.path.join('/Users/apple/Desktop/AI video/videoAnalysis_v1.0/data/dimensions', 'initial_key_dimensions.json')
+            if os.path.exists(template_path):
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    initial_template = json.load(f)
+                    
+                # 将模板添加到session_state.templates
+                if 'templates' not in st.session_state:
+                    st.session_state.templates = {}
+                st.session_state.templates['initial key dimensions'] = initial_template
+                
+                # 设置维度数据
+                initial_dimensions = {
+                    'level1': '品牌认知',
+                    'level2': list(initial_template.keys()),
+                    'level3': {}
+                }
+                
+                # 填充三级维度
+                for dim2 in initial_template:
+                    initial_dimensions['level3'][dim2] = list(initial_template[dim2].keys())
+                
+                # 保存到session_state
+                st.session_state.settings['dimensions'] = initial_dimensions
+                
+                # 生成权重设置
+                weights = {
+                    'level1': 1.0,
+                    'level2': {},
+                    'level3': {}
+                }
+                
+                # 为二级维度设置权重
+                for dim2 in initial_dimensions['level2']:
+                    weights['level2'][dim2] = 0.5
+                    weights['level3'][dim2] = {}
+                    
+                    # 为三级维度设置权重
+                    if dim2 in initial_dimensions['level3']:
+                        for dim3 in initial_dimensions['level3'][dim2]:
+                            weights['level3'][dim2][dim3] = 0.5
+                
+                st.session_state.settings['weights'] = weights
+                st.session_state.settings['custom_dimensions'] = True
+                
+                # 保存设置到当前项目
+                current_project = st.session_state.get('current_project', 'default')
+                if current_project:
+                    session_state.save_settings(current_project)
+                
+                logger.info("成功自动加载并保存initial key dimensions作为默认维度设置")
+        except Exception as e:
+            logger.error(f"自动加载initial key dimensions失败: {str(e)}")
     
     # 检查是否有已存在的项目，如果没有则创建默认项目
     project_list = get_projects_from_disk()
@@ -1837,6 +1900,43 @@ def show_dimension_page():
     if 'settings' not in st.session_state:
         st.session_state.settings = session_state.get_default_settings()
     
+    # 检查是否需要自动加载initial key dimensions模板
+    # 在页面加载时执行一次，确保模板被正确应用
+    if 'initial_dimensions_loaded' not in st.session_state:
+        st.session_state.initial_dimensions_loaded = False
+        
+    # 从磁盘加载initial key dimensions模板
+    if not st.session_state.initial_dimensions_loaded:
+        try:
+            template_path = os.path.join('/Users/apple/Desktop/AI video/videoAnalysis_v1.0/data/dimensions', 'initial_key_dimensions.json')
+            if os.path.exists(template_path):
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    initial_template = json.load(f)
+                    
+                # 将模板添加到session_state.templates
+                if 'templates' not in st.session_state:
+                    st.session_state.templates = {}
+                st.session_state.templates['initial key dimensions'] = initial_template
+                
+                # 设置维度数据
+                initial_dimensions = {
+                    'level1': '品牌认知',
+                    'level2': list(initial_template.keys()),
+                    'level3': {}
+                }
+                
+                # 填充三级维度
+                for dim2 in initial_template:
+                    initial_dimensions['level3'][dim2] = list(initial_template[dim2].keys())
+                
+                # 保存到session_state
+                st.session_state.settings['dimensions'] = initial_dimensions
+                st.session_state.initial_dimensions_loaded = True
+                logger.info("成功加载initial key dimensions模板")
+        except Exception as e:
+            logger.error(f"加载initial key dimensions模板时出错: {str(e)}")
+            st.error(f"加载模板时出错: {str(e)}")
+    
     # 初始化维度编辑器
     initial_dimensions = None
     if st.session_state.settings.get('dimensions'):
@@ -1846,7 +1946,7 @@ def show_dimension_page():
     
     # 模板管理区域
     st.subheader("模板管理")
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2 = st.columns([3, 1])
     
     with col1:
         # 模板选择下拉框
@@ -1866,42 +1966,209 @@ def show_dimension_page():
                 dimension_editor.apply_template(template_data)
                 # 更新会话状态
                 dimensions_data = dimension_editor.render()
-                st.session_state.settings['dimensions'] = dimensions_data['dimensions']
-                st.session_state.settings['weights'] = dimensions_data['weights']
-                st.session_state.settings['custom_dimensions'] = True
-                st.success(f"已应用模板 '{selected_template}'")
-                st.rerun()
-    
-    with col3:
-        # 删除模板按钮
-        if st.button("删除模板", type="secondary"):
-            if selected_template:
-                dimension_editor.delete_template(selected_template)
-                st.rerun()
+                # 确保dimensions_data是有效的结构
+                if isinstance(dimensions_data, dict) and 'dimensions' in dimensions_data:
+                    # 自动保存到设置
+                    st.session_state.settings['dimensions'] = dimensions_data['dimensions']
+                    st.session_state.settings['weights'] = dimensions_data['weights']
+                    st.session_state.settings['custom_dimensions'] = True
+                    st.success(f"已应用模板 '{selected_template}' 并自动保存设置")
+                    st.rerun()
+                else:
+                    st.error("应用模板失败：维度数据格式无效")
+                    logging.error(f"应用模板时维度数据格式无效: {dimensions_data}")
     
     # 创建新模板区域
     with st.expander("创建新模板", expanded=False):
-        new_template_name = st.text_input("模板名称", placeholder="请输入模板名称")
-        if st.button("保存为模板"):
-            if new_template_name:
-                # 获取当前维度结构
-                current_dimensions = dimension_editor.dimensions
-                current_weights = dimension_editor.weights
+        st.markdown("""
+        <style>
+        .dimension-card {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 4px solid #4CAF50;
+        }
+        .dimension-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .add-button {
+            background-color: #f1f3f4; 
+            padding: 5px 10px;
+            border-radius: 4px;
+            text-align: center;
+            cursor: pointer;
+            color: #333;
+            border: 1px dashed #ccc;
+            margin-top: 10px;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        # 模板名称输入
+        st.markdown("### 步骤1: 输入模板名称")
+        new_template_name = st.text_input("模板名称", key="template_name", 
+                                         placeholder="请输入一个有意义的名称，例如：'产品营销维度'")
+        
+        # 初始化会话状态
+        if 'template_dimensions' not in st.session_state:
+            try:
+                template_path = os.path.join('/Users/apple/Desktop/AI video/videoAnalysis_v1.0/data/dimensions', 'initial_key_dimensions.json')
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    st.session_state.template_dimensions = json.load(f)
+            except Exception as e:
+                st.session_state.template_dimensions = {}
+                st.error(f"加载参考模板时出错: {str(e)}")
+        
+        if 'template_structure' not in st.session_state:
+            # 初始化模板结构
+            st.session_state.template_structure = []
+        
+        # 一级维度区域
+        st.markdown("### 步骤2: 添加一级维度")
+        
+        # 参考模板中的一级维度列表
+        reference_dim1 = list(st.session_state.template_dimensions.keys())
+        
+        # 显示已添加的一级维度
+        for i, dim_data in enumerate(st.session_state.template_structure):
+            dim1_name = dim_data["dim1"]
+            with st.container():
+                st.markdown(f"""
+                <div class="dimension-card">
+                    <div class="dimension-title">一级维度: {dim1_name}</div>
+                </div>
+                """, unsafe_allow_html=True)
                 
+                # 二级维度列表
+                st.markdown("二级维度:")
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    # 显示当前二级维度列表
+                    dim2_list = dim_data.get("dim2", [])
+                    if dim2_list:
+                        for dim2 in dim2_list:
+                            st.markdown(f"- {dim2}")
+                    else:
+                        st.caption("暂无二级维度")
+                
+                # 添加二级维度
+                with col2:
+                    # 初始化清空标志
+                    clear_key = f"clear_dim2_input_{i}"
+                    if clear_key not in st.session_state:
+                        st.session_state[clear_key] = False
+                    
+                    # 如果有清空标志，则重置输入框    
+                    if st.session_state[clear_key]:
+                        # 重置标志
+                        st.session_state[clear_key] = False
+                        custom_dim2 = st.text_input("添加二级维度", key=f"custom_dim2_{i}", value="", placeholder="输入自定义二级维度")
+                    else:
+                        custom_dim2 = st.text_input("添加二级维度", key=f"custom_dim2_{i}", placeholder="输入自定义二级维度")
+                    
+                    if st.button("添加", key=f"add_dim2_{i}"):
+                        if custom_dim2 and custom_dim2 not in dim2_list:
+                            dim2_list.append(custom_dim2)
+                            # 设置清空标志，下次重新加载时会清空输入框
+                            st.session_state[clear_key] = True
+                            st.rerun()
+                        elif custom_dim2 in dim2_list:
+                            st.warning(f"维度 '{custom_dim2}' 已存在")
+                        else:
+                            st.warning("请输入维度名称")
+                
+                # 删除该一级维度的按钮
+                if st.button("删除这个一级维度", key=f"del_dim1_{i}"):
+                    st.session_state.template_structure.pop(i)
+                    st.rerun()
+        
+        # 添加新的一级维度
+        st.markdown("#### 添加新的一级维度")
+        
+        # 初始化添加模式状态
+        if 'dim1_add_mode' not in st.session_state:
+            st.session_state.dim1_add_mode = 'select'  # 默认为选择模式
+        
+        # 切换按钮行
+        mode_col1, mode_col2 = st.columns([1, 3])
+        with mode_col1:
+            current_mode = st.session_state.dim1_add_mode
+            if current_mode == 'select':
+                if st.button("切换到自定义输入", key="switch_to_custom"):
+                    st.session_state.dim1_add_mode = 'custom'
+                    st.rerun()
+            else:  # custom模式
+                if st.button("返回选择模式", key="switch_to_select"):
+                    st.session_state.dim1_add_mode = 'select'
+                    st.rerun()
+        
+        # 根据当前模式显示不同的输入方式
+        if st.session_state.dim1_add_mode == 'select':
+            # 从参考模板中选择
+            selected_dim1 = st.selectbox(
+                "从参考模板选择一级维度", 
+                [""] + reference_dim1,
+                key="select_dim1"
+            )
+            
+            if selected_dim1:
+                if st.button("添加选定的一级维度"):
+                    # 检查是否已存在
+                    existing_dims = [item["dim1"] for item in st.session_state.template_structure]
+                    if selected_dim1 not in existing_dims:
+                        st.session_state.template_structure.append({
+                            "dim1": selected_dim1,
+                            "dim2": []
+                        })
+                        st.rerun()
+                    else:
+                        st.warning(f"维度 '{selected_dim1}' 已存在")
+        else:  # custom模式
+            # 添加自定义一级维度
+            custom_dim1 = st.text_input("输入自定义一级维度", key="custom_dim1", placeholder="请输入新的维度名称")
+            
+            if custom_dim1:
+                if st.button("添加自定义一级维度"):
+                    # 检查是否已存在
+                    existing_dims = [item["dim1"] for item in st.session_state.template_structure]
+                    if custom_dim1 not in existing_dims:
+                        st.session_state.template_structure.append({
+                            "dim1": custom_dim1,
+                            "dim2": []
+                        })
+                        st.rerun()
+                    else:
+                        st.warning(f"维度 '{custom_dim1}' 已存在")
+        
+        # 保存按钮
+        st.markdown("### 步骤3: 保存模板")
+        if st.button("保存模板", type="primary"):
+            if not new_template_name:
+                st.error("请输入模板名称")
+            elif not st.session_state.template_structure:
+                st.error("请至少添加一个一级维度")
+            else:
                 # 转换为模板格式
                 template_data = {}
-                for level2 in current_dimensions['level2']:
-                    template_data[level2] = {}
-                    if level2 in current_dimensions['level3']:
-                        for level3 in current_dimensions['level3'][level2]:
-                            # 初始化空列表作为三级维度的值
-                            template_data[level2][level3] = []
+                for dim_data in st.session_state.template_structure:
+                    dim1 = dim_data["dim1"]
+                    dim2_list = dim_data.get("dim2", [])
+                    
+                    template_data[dim1] = {}
+                    for dim2 in dim2_list:
+                        template_data[dim1][dim2] = []
                 
                 # 保存模板
                 dimension_editor.save_template(new_template_name, template_data)
+                st.success(f"模板 '{new_template_name}' 保存成功！")
+                
+                # 清理会话状态
+                st.session_state.template_structure = []
+                time.sleep(1.5)
                 st.rerun()
-            else:
-                st.error("请输入模板名称")
     
     # 渲染维度编辑器
     dimensions_data = dimension_editor.render()
@@ -1910,58 +2177,171 @@ def show_dimension_page():
     col1, col2 = st.columns([3, 1])
     with col2:
         if st.button("保存维度设置", type="primary"):
-            st.session_state.settings['dimensions'] = dimensions_data['dimensions']
-            st.session_state.settings['weights'] = dimensions_data['weights']
-            st.session_state.settings['custom_dimensions'] = True
-            st.success("维度设置已保存")
+            # 确保dimensions_data是有效的结构
+            if isinstance(dimensions_data, dict) and 'dimensions' in dimensions_data:
+                # 将维度数据保存到settings
+                st.session_state.settings['dimensions'] = dimensions_data['dimensions']
+                st.session_state.settings['weights'] = dimensions_data['weights']
+                st.session_state.settings['custom_dimensions'] = True
+                st.success("维度设置已保存")
+            else:
+                st.error("维度数据格式无效，无法保存")
+                logging.error(f"维度数据格式无效: {dimensions_data}")
     
-    # 自动应用奶粉产品模板（如果当前没有维度设置）
+    # 自动应用初始关键维度模板（如果当前没有维度设置）
     if not st.session_state.settings.get('dimensions'):
-        if '奶粉产品维度' in st.session_state.templates:
-            template_data = st.session_state.templates['奶粉产品维度']
+        if 'initial key dimensions' in st.session_state.templates:
+            template_data = st.session_state.templates['initial key dimensions']
             dimension_editor.apply_template(template_data)
             dimensions_data = dimension_editor.render()
-            st.session_state.settings['dimensions'] = dimensions_data['dimensions']
-            st.session_state.settings['weights'] = dimensions_data['weights']
-            st.session_state.settings['custom_dimensions'] = True
-            st.rerun()
+            # 确保dimensions_data是有效的结构
+            if isinstance(dimensions_data, dict) and 'dimensions' in dimensions_data:
+                st.session_state.settings['dimensions'] = dimensions_data['dimensions']
+                st.session_state.settings['weights'] = dimensions_data['weights']
+                st.session_state.settings['custom_dimensions'] = True
+                st.rerun()
+            else:
+                logging.error(f"自动应用模板时维度数据格式无效: {dimensions_data}")
 
 def show_analysis_page():
-    """显示视频分析页面"""
+    """显示统一的视频分析页面"""
     st.header("视频分析")
-    st.markdown("处理视频，提取匹配指定维度的片段，自动生成宣传视频。")
+    st.markdown("处理视频，提取内容并按维度或关键词进行分析，自动生成宣传视频。")
     
     # 确保settings存在
     if 'settings' not in st.session_state:
         st.session_state.settings = session_state.get_default_settings()
     
-    # 输入视频URL
+    # 输入视频URL区域
     st.subheader("输入视频URL")
     
-    # 将列表转换为文本
-    default_urls = "\n".join(st.session_state.settings.get('urls', []))
+    # 创建两列布局，左侧显示URL列表，右侧显示CSV导入选项
+    url_col1, url_col2 = st.columns([2, 1])
     
-    urls_text = st.text_area(
-        "每行输入一个视频URL",
-        value=default_urls,
-        height=100,
-        help="支持各种视频网站链接或直接的视频文件URL"
-    )
+    with url_col1:
+        # 将列表转换为文本
+        default_urls = "\n".join(st.session_state.settings.get('urls', []))
+        
+        urls_text = st.text_area(
+            "每行输入一个视频URL",
+            value=default_urls,
+            height=100,
+            help="支持各种视频网站链接或直接的视频文件URL"
+        )
+        
+        # 将文本转换回列表并保存
+        if urls_text != default_urls:
+            urls = [url.strip() for url in urls_text.split("\n") if url.strip()]
+            st.session_state.settings['urls'] = urls
     
-    # 将文本转换回列表并保存
-    if urls_text != default_urls:
-        urls = [url.strip() for url in urls_text.split("\n") if url.strip()]
-        st.session_state.settings['urls'] = urls
+    with url_col2:
+        st.write("**批量导入URL**")
+        
+        # 创建模板下载按钮
+        template_csv = generate_url_template_csv()
+        st.download_button(
+            "下载URL模板",
+            template_csv,
+            "video_urls_template.csv",
+            "text/csv",
+            help="下载CSV模板，填入您的视频URL后上传"
+        )
+        
+        # CSV文件上传
+        uploaded_file = st.file_uploader(
+            "上传CSV文件导入URL",
+            type=["csv"],
+            help="上传包含视频URL的CSV文件（每行一个URL）"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                # 调用导入函数
+                new_count, total_count = import_urls_from_csv(uploaded_file)
+                if new_count > 0:
+                    st.success(f"成功导入 {new_count} 个新URL，当前共有 {total_count} 个URL")
+                    
+                    # 更新显示
+                    st.rerun()
+                else:
+                    st.warning("未找到有效的URL或所有URL已存在")
+            except Exception as e:
+                st.error(f"导入失败: {str(e)}")
     
-    # URL状态
+    # URL状态统计
     url_count = len(st.session_state.settings.get('urls', []))
     if url_count > 0:
         st.success(f"已添加 {url_count} 个视频URL")
     else:
         st.warning("请添加至少一个视频URL")
     
-    # 分析设置
-    st.subheader("分析设置")
+    # 如果没有输入URL，禁用分析选项卡
+    if url_count == 0:
+        st.info("请先添加视频URL，然后选择分析方式")
+        return
+    
+    # 使用tabs进行分析方式切换
+    tabs = st.tabs(["维度分析", "关键词分析"])
+    
+    # Tab 1: 维度分析
+    with tabs[0]:
+        show_dimension_analysis_tab()
+    
+    # Tab 2: 关键词分析
+    with tabs[1]:
+        show_keyword_analysis_tab()
+
+def show_dimension_analysis_tab():
+    """维度分析标签页内容"""
+    st.markdown("### 维度分析")
+    st.markdown("根据预设的维度结构，分析视频内容，提取匹配指定维度的片段。")
+    
+    # 添加当前维度展示区域
+    with st.expander("当前分析维度", expanded=True):
+        # 从session_state中获取当前维度设置
+        dimensions = st.session_state.settings.get('dimensions', {})
+        
+        # 确保dimensions存在基本结构
+        if not dimensions or not isinstance(dimensions, dict):
+            dimensions = {}
+            st.warning("尚未设置任何维度，请前往维度设置页面进行设置。")
+        else:
+            # 添加说明文本
+            st.info("维度分析将基于以下维度结构提取视频中的相关内容。")
+            
+            # 显示一级维度
+            level1 = dimensions.get('level1', '')
+            if level1:
+                st.markdown(f"**一级维度**: {level1}")
+                
+                # 即使没有二级维度也视为有效，只是显示一条提示信息
+                level2_dims = dimensions.get('level2', [])
+                level3_dims = dimensions.get('level3', {})
+                
+                if not level2_dims:
+                    st.caption("当前仅设置了一级维度，系统将基于一级维度进行分析。")
+                else:
+                    # 显示二级维度和对应的三级维度
+                    for i, dim2 in enumerate(level2_dims):
+                        # 如果此维度已被删除，则跳过
+                        if 'dimension_state' in st.session_state and dim2 in st.session_state.dimension_state.get('deleted_level2', []):
+                            continue
+                        
+                        st.markdown(f"**二级维度 {i+1}**: {dim2}")
+                        
+                        # 显示三级维度
+                        level3_for_dim2 = level3_dims.get(dim2, [])
+                        if level3_for_dim2:
+                            for j, dim3 in enumerate(level3_for_dim2):
+                                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;**三级维度 {i+1}.{j+1}**: {dim3}", unsafe_allow_html=True)
+                            else:
+                                st.markdown("&nbsp;&nbsp;&nbsp;&nbsp;*没有三级维度*", unsafe_allow_html=True)
+                        
+                        # 添加分隔符
+                        if i < len(level2_dims) - 1:
+                            st.markdown("---")
+            else:
+                st.warning("当前维度结构未设置一级维度，请前往维度设置页面完善。")
     
     col1, col2 = st.columns(2)
     
@@ -1972,17 +2352,22 @@ def show_analysis_page():
             0.5, 1.0, 
             value=st.session_state.settings.get('threshold', 0.7),
             step=0.05,
+            key="dimension_threshold_slider",
             help="较高的阈值将筛选出更相关的片段，但可能减少匹配数量"
         )
         st.session_state.settings['threshold'] = threshold
         
+        # 处理已保存的设置，如果是"三级维度"则更改为"综合评分"
+        saved_priority = st.session_state.settings.get('priority', '综合评分')
+        if saved_priority == "三级维度":
+            saved_priority = "综合评分"
+            st.session_state.settings['priority'] = saved_priority
+        
         # 匹配维度优先级
         priority = st.selectbox(
             "维度优先级",
-            ["一级维度", "二级维度", "三级维度", "综合评分"],
-            index=["一级维度", "二级维度", "三级维度", "综合评分"].index(
-                st.session_state.settings.get('priority', '综合评分')
-            ),
+            ["一级维度", "二级维度", "综合评分"],
+            index=["一级维度", "二级维度", "综合评分"].index(saved_priority),
             help="选择在匹配过程中优先考虑的维度层级"
         )
         st.session_state.settings['priority'] = priority
@@ -2006,54 +2391,270 @@ def show_analysis_page():
         st.session_state.settings['max_clips'] = max_clips
     
     # 处理按钮
-    if st.button("开始分析", type="primary", disabled=url_count == 0):
-        # 模拟处理逻辑（实际应用中需要连接到后端处理）
-        with st.spinner("正在处理视频..."):
-            try:
-                # 在此处应该调用处理器进行实际处理
-                # 暂时使用模拟数据
-                sample_segments = []
-                for i, url in enumerate(st.session_state.settings.get('urls', [])[:3]):
-                    for j in range(2):  # 每个URL生成2个片段
-                        sample_segments.append({
-                            'start': float(i * 10 + j * 5),
-                            'end': float(i * 10 + j * 5 + 3),
-                            'text': f"示例文本内容 {i+1}-{j+1}，这是一个模拟的字幕片段，用于测试系统功能。",
-                            'score': np.random.uniform(threshold, 1.0),
-                            'source': url,
-                            'clip_path': None  # 实际应用中应该有真实路径
-                        })
-                
-                # 按分数排序
-                sample_segments.sort(key=lambda x: x['score'], reverse=True)
-                
-                # 限制数量
-                sample_segments = sample_segments[:max_clips]
-                
-                # 保存结果
-                st.session_state.results = sample_segments
-                session_state.save_results(sample_segments)
-                
-                st.success(f"分析完成！找到 {len(sample_segments)} 个匹配片段。")
-                st.balloons()
-                
-            except Exception as e:
-                st.error(f"处理失败: {str(e)}")
-    
-    # 如果有结果，显示预览
-    if 'results' in st.session_state and st.session_state.results:
-        st.subheader("分析结果预览")
+    if st.button("开始维度分析", type="primary"):
+        # 检查是否有维度设置
+        dimensions = st.session_state.settings.get('dimensions', {})
+        if not dimensions or not isinstance(dimensions, dict) or not dimensions.get('level1'):
+            st.error("请先设置至少一级维度，再进行分析")
+        else:
+            # 模拟处理逻辑（实际应用中需要连接到后端处理）
+            with st.spinner("正在处理视频..."):
+                try:
+                    # 在此处应该调用处理器进行实际处理
+                    # 暂时使用模拟数据
+                    sample_segments = []
+                    for i, url in enumerate(st.session_state.settings.get('urls', [])[:3]):
+                        for j in range(2):  # 每个URL生成2个片段
+                            sample_segments.append({
+                                'start': float(i * 10 + j * 5),
+                                'end': float(i * 10 + j * 5 + 3),
+                                'text': f"示例文本内容 {i+1}-{j+1}，这是一个模拟的字幕片段，用于测试系统功能。",
+                                'score': np.random.uniform(threshold, 1.0),
+                                'source': url,
+                                'clip_path': None  # 实际应用中应该有真实路径
+                            })
+                    
+                    # 按分数排序
+                    sample_segments.sort(key=lambda x: x['score'], reverse=True)
+                    
+                    # 限制数量
+                    sample_segments = sample_segments[:max_clips]
+                    
+                    # 保存结果
+                    st.session_state.results = sample_segments
+                    session_state.save_results(sample_segments)
+                    
+                    # 同时更新keyword_results以便在不同标签页共享结果
+                    st.session_state.keyword_results = sample_segments
+                    
+                    st.success(f"分析完成！找到 {len(sample_segments)} 个匹配片段。")
+                    st.balloons()
+                    
+                    # 显示预览
+                    st.subheader("分析结果预览")
+                    
+                    # 创建预览组件
+                    preview = VideoPreview()
+                    preview.render_preview(
+                        sample_segments,
+                        st.session_state.settings
+                    )
+                    
+                    # 跳转按钮
+                    if st.button("查看详细结果", key="goto_results"):
+                        st.session_state.current_page = "结果管理"
+                        st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"处理失败: {str(e)}")
+
+def show_keyword_analysis_tab():
+    """关键词分析标签页内容"""
+    # 确保keyword_results存在
+    if 'keyword_results' not in st.session_state:
+        st.session_state.keyword_results = []
         
-        # 创建预览组件
-        preview = VideoPreview()
-        preview.render_preview(
-            st.session_state.results,
-            st.session_state.settings
+    st.markdown("### 关键词分析")
+    st.markdown("分析视频中与关键词语义相关的片段，提取符合条件的视频内容。")
+    
+    # 左右布局：左侧参数区域，右侧结果预览
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        # 关键词输入区
+        keywords = st.text_area(
+            "请输入关键词（多个关键词请用逗号、空格或换行分隔）",
+            placeholder="例如：安全、营养、品牌故事",
+            height=100
         )
         
-        # 跳转按钮
-        if st.button("查看详细结果", key="goto_results"):
-            st.rerun()
+        # 相似度阈值
+        threshold = st.slider(
+            "相似度阈值",
+            0.5, 1.0, 
+            value=st.session_state.settings.get('keyword_threshold', 0.7),
+            step=0.05,
+            key="keyword_threshold_slider",
+            help="较高的阈值将筛选出更相关的片段，但可能减少匹配数量"
+        )
+        st.session_state.settings['keyword_threshold'] = threshold
+        
+        # 处理模式
+        process_mode = st.radio(
+            "处理模式",
+            ["单独处理每个视频", "批量处理所有视频"],
+            horizontal=True,
+            help="单独处理模式将为每个视频单独分析关键词；批量处理模式将同时处理所有视频并按关键词分组结果"
+        )
+        st.session_state.settings['keyword_process_mode'] = process_mode
+        
+        # 处理按钮
+        if st.button("开始关键词分析", type="primary", disabled=not keywords.strip()):
+            # 解析关键词列表
+            keyword_list = [k.strip() for k in re.split(r'[,，\s\n]+', keywords) if k.strip()]
+            
+            # 关键词分析处理
+            with st.spinner("正在分析关键词相关内容..."):
+                try:
+                    # 导入关键词搜索工具
+                    from keyword_search import KeywordSearchTool
+                    
+                    # 初始化搜索工具
+                    search_tool = KeywordSearchTool()
+                    
+                    # 获取视频URL列表
+                    urls = st.session_state.settings.get('urls', [])
+                    
+                    # 获取处理模式
+                    process_mode = st.session_state.settings.get('keyword_process_mode', "单独处理每个视频")
+                    
+                    if process_mode == "批量处理所有视频":
+                        # 使用批量处理模式
+                        all_results = search_tool.batch_process(urls, keyword_list, threshold)
+                        
+                        # 合并所有结果
+                        results = []
+                        for url, url_results in all_results.items():
+                            for result in url_results:
+                                results.append(result)
+                                
+                        # 高亮结果中的关键词
+                        for result in results:
+                            if 'keyword' in result and 'text' in result:
+                                result['highlighted_text'] = search_tool.highlight_keywords(
+                                    result['text'], 
+                                    result['keyword']
+                                )
+                        
+                        # 保存结果
+                        st.session_state.keyword_results = results
+                    else:
+                        # 单独处理每个视频（原逻辑）
+                        # 生成视频片段（示例实现，实际应用中应该从视频中提取真实片段）
+                        sample_segments = []
+                        for i, url in enumerate(urls[:3]):
+                            # 在实际应用中，应该加载视频并提取字幕或转录内容
+                            # 这里使用示例数据模拟
+                            for j in range(5):  # 每个URL生成5个片段
+                                sample_segments.append({
+                                    'start': float(i * 10 + j * 5),
+                                    'end': float(i * 10 + j * 5 + 3),
+                                    'text': f"这是来自视频 {i+1} 的第 {j+1} 个片段。它包含关于产品介绍、{['品牌故事', '功能特点', '用户评价', '行业趋势', '使用场景'][j]}等内容。这是一个用于测试关键词匹配功能的示例。",
+                                    'source': url,
+                                    'clip_path': None  # 实际应用中应该有真实路径
+                                })
+                        
+                        # 调用关键词分析功能
+                        results = search_tool.search_by_keywords(
+                            sample_segments,
+                            keyword_list,
+                            threshold
+                        )
+                        
+                        # 高亮结果中的关键词
+                        for result in results:
+                            if 'keyword' in result and 'text' in result:
+                                result['highlighted_text'] = search_tool.highlight_keywords(
+                                    result['text'], 
+                                    result['keyword']
+                                )
+                        
+                        # 保存结果
+                        st.session_state.keyword_results = results
+                    
+                    if results:
+                        st.success(f"分析完成！找到 {len(results)} 个与关键词相关的片段。")
+                    else:
+                        st.warning("未找到与关键词相关的内容。请尝试降低相似度阈值或使用不同的关键词。")
+                    
+                    # 保存到结果管理中
+                    st.session_state.results = st.session_state.keyword_results
+                    session_state.save_results(st.session_state.keyword_results)
+                    
+                except Exception as e:
+                    st.error(f"处理失败: {str(e)}")
+                    import traceback
+                    st.error(traceback.format_exc())
+    
+    with col2:
+        # 结果预览区
+        if st.session_state.keyword_results:
+            st.subheader("分析结果")
+            
+            # 获取处理模式
+            process_mode = st.session_state.settings.get('keyword_process_mode', "单独处理每个视频")
+            
+            # 按不同方式分组显示结果
+            if process_mode == "批量处理所有视频":
+                # 按关键词分组
+                keyword_groups = {}
+                for segment in st.session_state.keyword_results:
+                    kw = segment.get('keyword', '未知')
+                    if kw not in keyword_groups:
+                        keyword_groups[kw] = []
+                    keyword_groups[kw].append(segment)
+                
+                # 遍历每个关键词组
+                for keyword, segments in keyword_groups.items():
+                    with st.expander(f"关键词: {keyword} ({len(segments)}个片段)", expanded=True):
+                        for i, segment in enumerate(segments):
+                            # 使用卡片式设计
+                            st.markdown(f"""
+                            <div style="border-left:3px solid #4CAF50; padding:10px; margin-bottom:10px; background-color:#f8f9fa;">
+                                <div style="color:#4CAF50;font-weight:bold;">片段 {i+1} (匹配度: {segment['score']:.2f})</div>
+                                <div>来源: {segment['source']}</div>
+                                <div>时间: {segment['start']:.1f}s - {segment['end']:.1f}s</div>
+                                <div style="margin-top:5px;padding:5px;background-color:#ffffff;">
+                                    {segment.get('highlighted_text', segment['text'])}
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+            else:
+                # 按视频源分组
+                source_groups = {}
+                for segment in st.session_state.keyword_results:
+                    src = segment['source']
+                    if src not in source_groups:
+                        source_groups[src] = []
+                    source_groups[src].append(segment)
+                
+                # 遍历每个视频源
+                for source, segments in source_groups.items():
+                    # 显示简短的视频源URL
+                    source_display = source
+                    if len(source_display) > 40:
+                        source_display = source_display[:20] + "..." + source_display[-17:]
+                    
+                    with st.expander(f"视频: {source_display} ({len(segments)}个片段)", expanded=True):
+                        for i, segment in enumerate(segments):
+                            # 使用卡片式设计
+                            st.markdown(f"""
+                            <div style="border-left:3px solid #4CAF50; padding:10px; margin-bottom:10px; background-color:#f8f9fa;">
+                                <div style="color:#4CAF50;font-weight:bold;">片段 {i+1} (匹配度: {segment['score']:.2f})</div>
+                                <div>关键词: {segment.get('keyword', '未知')}</div>
+                                <div>时间: {segment['start']:.1f}s - {segment['end']:.1f}s</div>
+                                <div style="margin-top:5px;padding:5px;background-color:#ffffff;">
+                                    {segment.get('highlighted_text', segment['text'])}
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+            
+            # 跳转按钮
+            if st.button("查看详细结果", key="kw_goto_results"):
+                st.session_state.current_page = "结果管理"
+                st.rerun()
+        else:
+            # 提示输入关键词
+            st.subheader("结果预览")
+            st.info("请输入关键词并点击\"开始关键词分析\"按钮来查找相关视频片段")
+            
+            # 在空白区域显示提示图标或说明
+            st.markdown("""
+            <div style="text-align:center; margin-top:50px; color:#757575;">
+                <div style="font-size:60px;">🔍</div>
+                <p>输入关键词，查找视频中的相关内容</p>
+            </div>
+            """, unsafe_allow_html=True)
 
 def show_results_page():
     """显示结果管理页面"""
@@ -2124,8 +2725,17 @@ def show_results_page():
             st.subheader(f"片段 {selected_idx+1}")
             st.write(f"**时间段**: {seg.get('start', 0):.1f}-{seg.get('end', 0):.1f}秒")
             st.write(f"**匹配分数**: {seg.get('score', 0):.2f}")
+            
+            # 显示关键词信息（如果存在）
+            if 'keyword' in seg:
+                st.write(f"**关键词**: {seg.get('keyword', '未知')}")
+            
             st.write(f"**文本内容**:")
-            st.info(seg.get('text', ''))
+            # 如果存在高亮文本，则使用高亮版本
+            if 'highlighted_text' in seg:
+                st.markdown(seg.get('highlighted_text', ''), unsafe_allow_html=True)
+            else:
+                st.info(seg.get('text', ''))
             
             # 显示视频预览（实际应用中应该有真实预览）
             st.write("**视频预览**:")
@@ -2150,8 +2760,7 @@ def show_results_page():
             # 假设的维度匹配数据（实际应用中应该有真实数据）
             dimension_match = {
                 "一级维度": "品牌形象",
-                "二级维度": ["产品特性", "用户需求"],
-                "三级维度": ["功能", "体验", "场景"]
+                "二级维度": ["产品特性", "用户需求"]
             }
             
             for level, dims in dimension_match.items():
@@ -2174,6 +2783,7 @@ def show_results_page():
         )
         
         include_text = st.checkbox("包含文本内容", value=True)
+        include_keyword = st.checkbox("包含关键词信息", value=True)
     
     with col2:
         # 导出按钮
@@ -2191,8 +2801,12 @@ def show_results_page():
                 if include_text:
                     item["text"] = seg.get('text', '')
                 
+                # 添加关键词信息
+                if include_keyword and 'keyword' in seg:
+                    item["keyword"] = seg.get('keyword', '')
+                
                 export_data.append(item)
-            
+                
             if export_format == "CSV":
                 df_export = pd.DataFrame(export_data)
                 csv = df_export.to_csv(index=False)
@@ -2212,6 +2826,68 @@ def show_results_page():
                     "application/json",
                     key="download_json"
                 )
+
+# CSV文件导入URL工具函数
+def import_urls_from_csv(uploaded_file):
+    """
+    从上传的CSV文件中导入URL列表
+    
+    参数:
+        uploaded_file: Streamlit上传的CSV文件对象
+        
+    返回:
+        导入URL数量，更新后的总URL数量
+    """
+    try:
+        # 读取CSV文件
+        df = pd.read_csv(uploaded_file, header=None)
+        
+        # 提取URL列表（假设URL在第一列）
+        new_urls = []
+        for idx, row in df.iterrows():
+            url = str(row[0]).strip()
+            if url and (url.startswith('http://') or url.startswith('https://')):
+                new_urls.append(url)
+        
+        if new_urls:
+            # 合并去重
+            current_urls = set(st.session_state.settings.get('urls', []))
+            current_urls.update(new_urls)
+            all_urls = list(current_urls)
+            
+            # 更新session_state
+            st.session_state.settings['urls'] = all_urls
+            return len(new_urls), len(all_urls)
+        else:
+            return 0, 0
+    except Exception as e:
+        logging.error(f"CSV解析失败: {str(e)}")
+        raise e
+
+def generate_url_template_csv():
+    """
+    生成URL模板CSV文件
+    
+    返回:
+        bytes: CSV文件内容
+    """
+    import io
+    import csv
+    
+    # 创建内存文件
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # 写入示例URL
+    writer.writerow(["https://your-bucket.oss-cn-beijing.aliyuncs.com/videos/example1.mp4"])
+    writer.writerow(["https://your-bucket.oss-cn-beijing.aliyuncs.com/videos/example2.mp4"])
+    writer.writerow(["https://your-bucket.oss-cn-beijing.aliyuncs.com/videos/example3.mp4"])
+    
+    # 获取CSV内容
+    content = output.getvalue()
+    output.close()
+    
+    return content.encode('utf-8')
 
 if __name__ == "__main__":
     main()

@@ -1840,7 +1840,7 @@ def show_dimension_page():
     
     # 模板管理区域
     st.subheader("模板管理")
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2 = st.columns([3, 1])
     
     with col1:
         # 模板选择下拉框
@@ -1866,36 +1866,197 @@ def show_dimension_page():
                 st.success(f"已应用模板 '{selected_template}'")
                 st.rerun()
     
-    with col3:
-        # 删除模板按钮
-        if st.button("删除模板", type="secondary"):
-            if selected_template:
-                dimension_editor.delete_template(selected_template)
-                st.rerun()
-    
     # 创建新模板区域
     with st.expander("创建新模板", expanded=False):
-        new_template_name = st.text_input("模板名称", placeholder="请输入模板名称")
-        if st.button("保存为模板"):
-            if new_template_name:
-                # 获取当前维度结构
-                current_dimensions = dimension_editor.dimensions
-                current_weights = dimension_editor.weights
+        st.markdown("""
+        <style>
+        .dimension-card {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 4px solid #4CAF50;
+        }
+        .dimension-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .add-button {
+            background-color: #f1f3f4; 
+            padding: 5px 10px;
+            border-radius: 4px;
+            text-align: center;
+            cursor: pointer;
+            color: #333;
+            border: 1px dashed #ccc;
+            margin-top: 10px;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        # 模板名称输入
+        st.markdown("### 步骤1: 输入模板名称")
+        new_template_name = st.text_input("模板名称", key="template_name", 
+                                         placeholder="请输入一个有意义的名称，例如：'产品营销维度'")
+        
+        # 初始化会话状态
+        if 'template_dimensions' not in st.session_state:
+            try:
+                template_path = os.path.join('/Users/apple/Desktop/AI video/videoAnalysis_v1.0/data/dimensions', 'initial_key_dimensions.json')
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    st.session_state.template_dimensions = json.load(f)
+            except Exception as e:
+                st.session_state.template_dimensions = {}
+                st.error(f"加载参考模板时出错: {str(e)}")
+        
+        if 'template_structure' not in st.session_state:
+            # 初始化模板结构
+            st.session_state.template_structure = []
+        
+        # 一级维度区域
+        st.markdown("### 步骤2: 添加一级维度")
+        
+        # 参考模板中的一级维度列表
+        reference_dim1 = list(st.session_state.template_dimensions.keys())
+        
+        # 显示已添加的一级维度
+        for i, dim_data in enumerate(st.session_state.template_structure):
+            dim1_name = dim_data["dim1"]
+            with st.container():
+                st.markdown(f"""
+                <div class="dimension-card">
+                    <div class="dimension-title">一级维度: {dim1_name}</div>
+                </div>
+                """, unsafe_allow_html=True)
                 
+                # 二级维度列表
+                st.markdown("二级维度:")
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    # 显示当前二级维度列表
+                    dim2_list = dim_data.get("dim2", [])
+                    if dim2_list:
+                        for dim2 in dim2_list:
+                            st.markdown(f"- {dim2}")
+                    else:
+                        st.caption("暂无二级维度")
+                
+                # 添加二级维度
+                with col2:
+                    # 初始化清空标志
+                    clear_key = f"clear_dim2_input_{i}"
+                    if clear_key not in st.session_state:
+                        st.session_state[clear_key] = False
+                    
+                    # 如果有清空标志，则重置输入框    
+                    if st.session_state[clear_key]:
+                        # 重置标志
+                        st.session_state[clear_key] = False
+                        custom_dim2 = st.text_input("添加二级维度", key=f"custom_dim2_{i}", value="", placeholder="输入自定义二级维度")
+                    else:
+                        custom_dim2 = st.text_input("添加二级维度", key=f"custom_dim2_{i}", placeholder="输入自定义二级维度")
+                    
+                    if st.button("添加", key=f"add_dim2_{i}"):
+                        if custom_dim2 and custom_dim2 not in dim2_list:
+                            dim2_list.append(custom_dim2)
+                            # 设置清空标志，下次重新加载时会清空输入框
+                            st.session_state[clear_key] = True
+                            st.rerun()
+                        elif custom_dim2 in dim2_list:
+                            st.warning(f"维度 '{custom_dim2}' 已存在")
+                        else:
+                            st.warning("请输入维度名称")
+                
+                # 删除该一级维度的按钮
+                if st.button("删除这个一级维度", key=f"del_dim1_{i}"):
+                    st.session_state.template_structure.pop(i)
+                    st.rerun()
+        
+        # 添加新的一级维度
+        st.markdown("#### 添加新的一级维度")
+        
+        # 初始化添加模式状态
+        if 'dim1_add_mode' not in st.session_state:
+            st.session_state.dim1_add_mode = 'select'  # 默认为选择模式
+        
+        # 切换按钮行
+        mode_col1, mode_col2 = st.columns([1, 3])
+        with mode_col1:
+            current_mode = st.session_state.dim1_add_mode
+            if current_mode == 'select':
+                if st.button("切换到自定义输入", key="switch_to_custom"):
+                    st.session_state.dim1_add_mode = 'custom'
+                    st.rerun()
+            else:  # custom模式
+                if st.button("返回选择模式", key="switch_to_select"):
+                    st.session_state.dim1_add_mode = 'select'
+                    st.rerun()
+        
+        # 根据当前模式显示不同的输入方式
+        if st.session_state.dim1_add_mode == 'select':
+            # 从参考模板中选择
+            selected_dim1 = st.selectbox(
+                "从参考模板选择一级维度", 
+                [""] + reference_dim1,
+                key="select_dim1"
+            )
+            
+            if selected_dim1:
+                if st.button("添加选定的一级维度"):
+                    # 检查是否已存在
+                    existing_dims = [item["dim1"] for item in st.session_state.template_structure]
+                    if selected_dim1 not in existing_dims:
+                        st.session_state.template_structure.append({
+                            "dim1": selected_dim1,
+                            "dim2": []
+                        })
+                        st.rerun()
+                    else:
+                        st.warning(f"维度 '{selected_dim1}' 已存在")
+        else:  # custom模式
+            # 添加自定义一级维度
+            custom_dim1 = st.text_input("输入自定义一级维度", key="custom_dim1", placeholder="请输入新的维度名称")
+            
+            if custom_dim1:
+                if st.button("添加自定义一级维度"):
+                    # 检查是否已存在
+                    existing_dims = [item["dim1"] for item in st.session_state.template_structure]
+                    if custom_dim1 not in existing_dims:
+                        st.session_state.template_structure.append({
+                            "dim1": custom_dim1,
+                            "dim2": []
+                        })
+                        st.rerun()
+                    else:
+                        st.warning(f"维度 '{custom_dim1}' 已存在")
+        
+        # 保存按钮
+        st.markdown("### 步骤3: 保存模板")
+        if st.button("保存模板", type="primary"):
+            if not new_template_name:
+                st.error("请输入模板名称")
+            elif not st.session_state.template_structure:
+                st.error("请至少添加一个一级维度")
+            else:
                 # 转换为模板格式
                 template_data = {}
-                for level2 in current_dimensions['level2']:
-                    template_data[level2] = {}
-                    if level2 in current_dimensions['level3']:
-                        for level3 in current_dimensions['level3'][level2]:
-                            # 初始化空列表作为三级维度的值
-                            template_data[level2][level3] = []
+                for dim_data in st.session_state.template_structure:
+                    dim1 = dim_data["dim1"]
+                    dim2_list = dim_data.get("dim2", [])
+                    
+                    template_data[dim1] = {}
+                    for dim2 in dim2_list:
+                        template_data[dim1][dim2] = []
                 
                 # 保存模板
                 dimension_editor.save_template(new_template_name, template_data)
+                st.success(f"模板 '{new_template_name}' 保存成功！")
+                
+                # 清理会话状态
+                st.session_state.template_structure = []
+                time.sleep(1.5)
                 st.rerun()
-            else:
-                st.error("请输入模板名称")
     
     # 渲染维度编辑器
     dimensions_data = dimension_editor.render()

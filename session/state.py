@@ -32,14 +32,60 @@ class SessionState:
     
     def get_default_settings(self) -> Dict[str, Any]:
         """获取默认设置"""
+        # 尝试加载initial_key_dimensions作为默认维度
+        try:
+            import os
+            import json
+            template_path = os.path.join('/Users/apple/Desktop/AI video/videoAnalysis_v1.0/data/dimensions', 'initial_key_dimensions.json')
+            initial_dimensions = None
+            if os.path.exists(template_path):
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    initial_template = json.load(f)
+                    
+                    # 设置维度数据结构
+                    initial_dimensions = {
+                        'level1': '品牌认知',
+                        'level2': list(initial_template.keys()),
+                        'level3': {}
+                    }
+                    
+                    # 填充三级维度
+                    for dim2 in initial_template:
+                        initial_dimensions['level3'][dim2] = list(initial_template[dim2].keys())
+                    
+                    # 生成权重设置
+                    weights = {
+                        'level1': 1.0,
+                        'level2': {},
+                        'level3': {}
+                    }
+                    
+                    # 为二级维度设置权重
+                    for dim2 in initial_dimensions['level2']:
+                        weights['level2'][dim2] = 0.5
+                        weights['level3'][dim2] = {}
+                        
+                        # 为三级维度设置权重
+                        if dim2 in initial_dimensions['level3']:
+                            for dim3 in initial_dimensions['level3'][dim2]:
+                                weights['level3'][dim2][dim3] = 0.5
+                    
+                    logger.info("已加载initial key dimensions作为默认维度设置")
+        except Exception as e:
+            logger.error(f"加载initial key dimensions失败: {str(e)}")
+            initial_dimensions = None
+            weights = None
+        
+        # 返回默认设置
         return {
             'urls': [],
             'threshold': 0.7,
             'priority': '综合评分',
             'transition': '淡入淡出',
             'transition_duration': 1.0,
-            'custom_dimensions': False,
-            'dimensions': None,
+            'custom_dimensions': initial_dimensions is not None,  # 如果成功加载了维度，则标记为自定义
+            'dimensions': initial_dimensions,
+            'weights': weights,
             'hot_words': []
         }
     

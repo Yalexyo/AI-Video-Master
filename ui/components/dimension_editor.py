@@ -4,6 +4,7 @@ import logging
 import time
 import os
 from typing import Dict, List, Any
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -12,14 +13,43 @@ class DimensionEditor:
 
     def __init__(self, initial_dimensions: Dict = None):
         """初始化维度编辑器"""
-        self.dimensions = initial_dimensions or {
-            'level1': '品牌认知',
-            'level2': ['产品特性', '用户需求'],
-            'level3': {
-                '产品特性': ['功能', '外观', '性能'],
-                '用户需求': ['场景', '痛点', '期望']
-            }
-        }
+        # 初始化模板列表，确保在初始化维度之前完成
+        if 'templates' not in st.session_state:
+            st.session_state.templates = {}
+            
+            # 从本地文件加载默认模板
+            self._load_default_templates()
+        
+        # 确保initial_dimensions有效性
+        if initial_dimensions and isinstance(initial_dimensions, dict):
+            self.dimensions = initial_dimensions
+        else:
+            # 如果没有提供有效的initial_dimensions，尝试使用initial key dimensions模板
+            if 'initial key dimensions' in st.session_state.templates:
+                template_data = st.session_state.templates['initial key dimensions']
+                logger.info("使用initial key dimensions模板初始化维度结构")
+                
+                # 从模板创建维度结构
+                self.dimensions = {
+                    'level1': '品牌认知',
+                    'level2': list(template_data.keys()),
+                    'level3': {}
+                }
+                
+                # 填充三级维度
+                for dim2 in template_data:
+                    self.dimensions['level3'][dim2] = list(template_data[dim2].keys())
+            else:
+                # 如果模板也不存在，使用默认维度结构
+                self.dimensions = {
+                    'level1': '品牌认知',
+                    'level2': ['产品特性', '用户需求'],
+                    'level3': {
+                        '产品特性': ['功能', '外观', '性能'],
+                        '用户需求': ['场景', '痛点', '期望']
+                    }
+                }
+        
         self.weights = self._initialize_weights()
         
         # 初始化会话状态
@@ -29,13 +59,6 @@ class DimensionEditor:
                 'deleted_level2': []    # 存储已删除的二级维度列表
             }
         
-        # 初始化模板列表
-        if 'templates' not in st.session_state:
-            st.session_state.templates = {}
-            
-            # 从本地文件加载默认模板
-            self._load_default_templates()
-                
     def _initialize_weights(self) -> Dict:
         """初始化维度权重"""
         weights = {
@@ -59,21 +82,41 @@ class DimensionEditor:
     def _load_default_templates(self):
         """从磁盘加载默认模板"""
         try:
-            # 构建模板文件路径
-            template_path = os.path.join('data', 'dimensions', 'initial_key_dimensions.json')
+            # 使用绝对路径构建模板目录路径
+            template_dir = '/Users/apple/Desktop/AI video/videoAnalysis_v1.0/data/dimensions/'
             
-            # 检查文件是否存在
-            if os.path.exists(template_path):
-                with open(template_path, 'r', encoding='utf-8') as f:
-                    template_data = json.load(f)
+            # 检查目录是否存在
+            if os.path.exists(template_dir) and os.path.isdir(template_dir):
+                # 遍历目录中的所有JSON文件
+                files_loaded = 0
+                for filename in os.listdir(template_dir):
+                    if filename.endswith('.json'):
+                        template_path = os.path.join(template_dir, filename)
+                        try:
+                            with open(template_path, 'r', encoding='utf-8') as f:
+                                template_data = json.load(f)
+                            
+                            # 使用文件名作为模板名称（去除.json后缀并将下划线替换为空格）
+                            template_name = os.path.splitext(filename)[0].replace('_', ' ')
+                            st.session_state.templates[template_name] = template_data
+                            files_loaded += 1
+                            logger.info(f"成功加载模板: {template_path}")
+                            
+                            # 特别检查是否加载了initial_key_dimensions.json
+                            if filename == 'initial_key_dimensions.json':
+                                logger.info("已成功加载initial key dimensions模板")
+                        except Exception as e:
+                            logger.error(f"加载模板 {template_path} 时出错: {str(e)}")
                 
-                # 添加奶粉产品维度分析模板
-                st.session_state.templates["奶粉产品维度分析"] = template_data
-                logger.info(f"成功加载默认模板: {template_path}")
+                if files_loaded == 0:
+                    logger.warning(f"在目录 {template_dir} 中未找到JSON模板文件")
+                    # 添加内置模板
+                    self._add_builtin_templates()
+                else:
+                    logger.info(f"共加载了 {files_loaded} 个模板文件")
             else:
-                logger.warning(f"模板文件不存在: {template_path}")
-                
-                # 添加一些内置模板
+                logger.warning(f"模板目录不存在: {template_dir}")
+                # 添加内置模板
                 self._add_builtin_templates()
         except Exception as e:
             logger.error(f"加载默认模板时出错: {str(e)}")
@@ -144,7 +187,9 @@ class DimensionEditor:
                 row_cols[1].text(dim2)
                 
                 # 查询按钮 - 切换展开/折叠状态
-                if row_cols[2].button("查询", key=f"query_btn_{i}_{dim2.replace(' ', '_')}", use_container_width=True):
+                # 使用维度名称、索引和UUID生成唯一key，避免使用time.time来确保稳定性
+                unique_key = f"query_btn_{i}_{dim2.replace(' ', '_')}_{uuid.uuid4()}"
+                if row_cols[2].button("查询", key=unique_key, use_container_width=True):
                     if dim2 in st.session_state.dimension_state['expanded_level2']:
                         st.session_state.dimension_state['expanded_level2'].remove(dim2)
                     else:
@@ -152,7 +197,8 @@ class DimensionEditor:
                     st.rerun()
                 
                 # 删除按钮
-                if row_cols[3].button("删除", key=f"delete_btn_{i}_{dim2.replace(' ', '_')}", use_container_width=True):
+                delete_key = f"delete_btn_{i}_{dim2.replace(' ', '_')}_{uuid.uuid4()}"
+                if row_cols[3].button("删除", key=delete_key, use_container_width=True):
                     self._delete_dimension(dim2)
                     st.success(f"已删除维度: {dim2}")
                     time.sleep(0.5)  # 短暂延迟以显示成功消息
@@ -188,10 +234,11 @@ class DimensionEditor:
                                         "三级维度": st.column_config.TextColumn(width="medium")
                                     },
                                     use_container_width=True,
-                                    hide_index=True
+                                    hide_index=True,
+                                    key=f"level3_df_{dim2}_{i}_{uuid.uuid4()}"
                                 )
                         else:
-                            st.info(f"维度 '{dim2}' 下没有三级维度")
+                            st.info(f"维度 '{dim2}' 下没有三级维度", key=f"no_level3_info_{dim2}_{i}_{uuid.uuid4()}")
                     
                     st.markdown("---")  # 详情区的结束分隔线
                 else:
@@ -201,10 +248,10 @@ class DimensionEditor:
             # 提供总计信息
             st.caption(f"共 {len(visible_dimensions)} 个维度")
         else:
-            st.info("还没有定义任何维度。请使用模板或添加新维度。")
+            st.info("还没有定义任何维度。请使用模板或添加新维度。", key=f"no_dims_info_{uuid.uuid4()}")
         
         # 添加新维度按钮
-        if st.button("添加新维度", key="add_new_dimension_btn"):
+        if st.button("添加新维度", key=f"add_new_dimension_btn_{uuid.uuid4()}", use_container_width=True):
             new_dim = f"新维度{len(self.dimensions['level2'])+1}"
             self.dimensions['level2'].append(new_dim)
             self.dimensions['level3'][new_dim] = []
