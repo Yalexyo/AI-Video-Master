@@ -1,0 +1,31 @@
+            selected_project = st.selectbox(
+                "请选择要加载的项目",
+                options=project_list,
+                index=0 if project_list else 0,
+                placeholder="选择项目...",
+                label_visibility="collapsed"
+            )
+        
+        # 加载按钮
+        with col_load:
+            load_clicked = st.button("加载", key="load_project")
+            
+        # 刷新按钮
+        with col_refresh:
+            refresh_clicked = st.button("🔄", key="refresh_projects", help="刷新项目列表")
+            if refresh_clicked:
+                # 强制刷新项目列表
+                st.rerun()
+        
+        # 处理加载逻辑并显示提示
+        if load_clicked:
+            if session_state.load_settings(selected_project):
+                st.success(f"项目 '{selected_project}' 已加载")
+                st.session_state['current_project'] = selected_project
+            else:
+                st.error(f"未找到项目 '{selected_project}'")
+                    
+        # 显示当前项目 - 更紧凑的布局
+        if 'current_project' in st.session_state and st.session_state['current_project']:
+            current_project = st.session_state['current_project']
+            
