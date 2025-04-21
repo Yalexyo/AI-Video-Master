@@ -1,0 +1,16 @@
+dashscope
+ffmpeg-python
+torch
+transformers
+modelscope
+tqdm
+requests
+addict
+datasets
+nest_asyncio
+streamlit
+sentence_transformers
+moviepy==1.0.3
+scikit-learn
+pandas
+requests

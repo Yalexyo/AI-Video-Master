@@ -1,0 +1,42 @@
+# 虚拟环境
+.venv/
+.venv310/
+venv/
+env/
+__pycache__/
+
+# 系统文件
+.DS_Store
+.idea/
+.vscode/
+
+# 日志和临时文件
+logs/
+*.log
+*.tmp
+*.temp
+temp*
+temp_*
+
+# 备份和修复文件
+*_backup*
+*.bak
+backup/
+*.broken
+*_fixed.txt
+fix_*
+fixed_*
+*_fix*
+!fixed_dimension_editor.py
+
+# 测试文件
+test*.py
+test/
+
+# 环境配置
+.env
+.python-version
+
+*.py[cod]
+*.class
+.cursor/
